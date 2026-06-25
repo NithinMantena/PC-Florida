@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# generated report (rebuilt on every ETL run)
+validation_report.txt
+
+# NOTE: web/data.js IS tracked on purpose so the site works wherever the
+# vault syncs, without needing Python to regenerate it. Re-run update.bat
+# after adding a quarter to refresh it.

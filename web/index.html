@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Florida P&amp;C Market Explorer</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --txt:#e7eaf0; --muted:#9aa3b2; --accent:#4ea1ff; --accent2:#39d98a;
+    --warn:#ffb86b; --chip:#222836;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font:14px/1.45 "Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  a{color:var(--accent)}
+  #app{display:flex;height:100vh;overflow:hidden}
+  /* ---- sidebar ---- */
+  #side{width:330px;min-width:330px;background:var(--panel);border-right:1px solid var(--line);
+    overflow-y:auto;padding:14px 14px 40px}
+  #side h1{font-size:15px;margin:0 0 2px;letter-spacing:.3px}
+  #side .sub{color:var(--muted);font-size:11px;margin-bottom:12px}
+  .grp{margin-bottom:14px;border-top:1px solid var(--line);padding-top:12px}
+  .grp:first-of-type{border-top:none;padding-top:0}
+  label.lbl{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.6px;
+    color:var(--muted);margin:0 0 5px}
+  select,input[type=text]{width:100%;background:var(--panel2);color:var(--txt);
+    border:1px solid var(--line);border-radius:6px;padding:7px 8px;font-size:13px;outline:none}
+  select:focus,input:focus{border-color:var(--accent)}
+  select[multiple]{height:165px}
+  #companies option,#policyTypes option{font-size:11px;padding:2px 5px;line-height:1.35}
+  .row{display:flex;gap:8px}
+  .row>*{flex:1}
+  .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .seg button{flex:1;background:var(--panel2);color:var(--muted);border:none;
+    padding:7px 4px;cursor:pointer;font-size:12px}
+  .seg button.on{background:var(--accent);color:#06223f;font-weight:600}
+  .chk{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;margin-top:6px;cursor:pointer}
+  .chk input{accent-color:var(--accent)}
+  .hint{font-size:11px;color:var(--muted);margin-top:5px}
+  /* ---- main ---- */
+  #main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+  #ctx{padding:9px 16px;background:var(--panel2);border-bottom:1px solid var(--line);
+    font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .pill{background:var(--chip);border:1px solid var(--line);border-radius:20px;padding:2px 10px;color:var(--txt)}
+  .pill b{color:var(--accent)}
+  #content{flex:1;overflow:auto;padding:14px 16px 60px}
+  #chart{width:100%;height:430px;margin-bottom:14px}
+  .tablewrap{border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:60vh}
+  table{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px}
+  th,td{padding:6px 10px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+  th{position:sticky;top:0;z-index:3;background:var(--panel2);cursor:pointer;user-select:none;color:var(--muted);
+    text-transform:uppercase;font-size:10.5px;letter-spacing:.5px;
+    box-shadow:inset 0 -1px 0 var(--line)}
+  th:hover{color:var(--txt)}
+  td.l,th.l{text-align:left}
+  tbody tr:hover{background:#1b2029}
+  .num{font-variant-numeric:tabular-nums}
+  .sup{color:#6b7280}
+  .toolbar{display:flex;justify-content:space-between;align-items:center;margin:4px 0 10px}
+  .btn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;
+    padding:6px 12px;cursor:pointer;font-size:12px}
+  .btn:hover{border-color:var(--accent)}
+  .muted{color:var(--muted)}
+  .warnbox{background:#2a1f12;border:1px solid #5a4220;color:#ffce93;padding:8px 12px;border-radius:6px;
+    font-size:12px;margin-bottom:12px;display:none}
+  .credit{font-size:10.5px;color:#5b6470;margin-top:18px;line-height:1.5}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <h1>Florida P&amp;C Explorer</h1>
+    <div class="sub" id="coverage">loading…</div>
+
+    <div class="grp">
+      <label class="lbl">View</label>
+      <div class="seg" id="modeSeg">
+        <button data-mode="rank" class="on">Ranking</button>
+        <button data-mode="share">Market&nbsp;share</button>
+        <button data-mode="series">Time&nbsp;series</button>
+      </div>
+    </div>
+
+    <div class="grp">
+      <label class="lbl">Metric</label>
+      <select id="metric"></select>
+      <label class="lbl" style="margin-top:10px">Wind basis</label>
+      <div class="seg" id="windSeg">
+        <button data-w="all" class="on">All</button>
+        <button data-w="incl">Incl&nbsp;wind</button>
+        <button data-w="excl">Excl&nbsp;wind</button>
+      </div>
+      <div class="hint" id="windHint">Applies to PIF / TIV / DPW only.</div>
+    </div>
+
+    <div class="grp">
+      <label class="lbl">Line of business</label>
+      <div class="seg" id="lineSeg">
+        <button data-line="all" class="on">All</button>
+        <button data-line="Commercial Residential">Commercial</button>
+        <button data-line="Personal Residential">Personal</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="windOnlyOnly"> Wind-only policy types only</label>
+      <label class="lbl" style="margin-top:10px">Policy types <span class="muted" id="ptCount"></span></label>
+      <input type="text" id="ptSearch" placeholder="filter policy types…" />
+      <select id="policyTypes" multiple></select>
+      <div class="hint">None selected = all types in the chosen line.</div>
+    </div>
+
+    <div class="grp" id="periodGrp">
+      <label class="lbl" id="periodLbl">Period</label>
+      <select id="periodSingle"></select>
+      <div class="row" id="rangeRow" style="display:none">
+        <div><label class="lbl">From</label><select id="periodFrom"></select></div>
+        <div><label class="lbl">To</label><select id="periodTo"></select></div>
+      </div>
+    </div>
+
+    <div class="grp" id="companyGrp">
+      <label class="lbl">Companies <span class="muted" id="coCount"></span></label>
+      <input type="text" id="coSearch" placeholder="search name or NAIC…" />
+      <select id="companies" multiple></select>
+      <div class="hint">Resolved by NAIC — handles name changes across quarters.</div>
+    </div>
+
+    <div class="grp">
+      <label class="lbl">Display</label>
+      <div class="row">
+        <div>
+          <span class="hint">$ scale</span>
+          <select id="scale">
+            <option value="auto">Auto</option>
+            <option value="1">$ (units)</option>
+            <option value="1000">$K</option>
+            <option value="1000000">$M</option>
+            <option value="1000000000">$B</option>
+          </select>
+        </div>
+        <div>
+          <span class="hint">Top-N</span>
+          <select id="topn">
+            <option>10</option><option selected>20</option><option>30</option>
+            <option>50</option><option value="9999">All</option>
+          </select>
+        </div>
+      </div>
+      <div class="seg" id="transformSeg" style="margin-top:10px">
+        <button data-t="abs" class="on">Absolute</button>
+        <button data-t="qoq">QoQ&nbsp;%</button>
+        <button data-t="yoy">YoY&nbsp;%</button>
+      </div>
+      <div class="hint">QoQ / YoY apply in Time-series view.</div>
+    </div>
+
+    <div class="credit">
+      Source: FLOIR QUASR / Quarterly MIR residential market-share reports.<br>
+      Data generated <span id="genAt"></span>. Drop a new quarter's .xlsx in the
+      folder and run <b>update.bat</b> to refresh.
+    </div>
+  </aside>
+
+  <section id="main">
+    <div id="ctx"></div>
+    <div id="content">
+      <div class="warnbox" id="warnbox"></div>
+      <div id="chart"></div>
+      <div class="toolbar">
+        <div class="muted" id="tableTitle"></div>
+        <button class="btn" id="csvBtn">⭳ Export CSV</button>
+      </div>
+      <div class="tablewrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+</div>
+
+<script src="vendor/plotly.min.js"></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
