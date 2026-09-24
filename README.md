@@ -26,6 +26,20 @@ The left panel drives everything:
 Every view shows its active filter context at the top and exports the current
 table to CSV.
 
+## Chatbot API / MCP server (Claude, ChatGPT, ...)
+
+The same dataset is served to LLMs by a small Docker container (`api/`): an MCP
+server at `/mcp` plus a REST API with an OpenAPI spec at `/api`. It exposes 8 tools
+(catalog, company search, time series, period-over-period change attribution,
+rankings/market share, company profile, market overview, read-only SQL). Together
+they cover any company or group, metric, policy type and quarter, with compact
+token-cheap output. Run it on your Docker server behind Tailscale Funnel and
+connect Claude and ChatGPT to it. New quarters dropped into its data folder are
+picked up automatically.
+
+See **[docs/API.md](docs/API.md)** for deployment, Tailscale, connecting each
+chatbot, and the tool reference.
+
 ## Adding a new quarter
 
 1. Download the new quarter's workbook(s) from FLOIR
@@ -45,6 +59,8 @@ one with the newest pull-timestamp in its filename wins.
 
 - `web/data.js` — the normalized dataset the site loads (rebuildable; kept in
   git so the site works wherever the vault syncs).
+- `data/florida_pc.sqlite` — the same data as a SQLite store for the API / MCP
+  server (gitignored; the server rebuilds it itself).
 - `validation_report.txt` — per-quarter coverage, Total-row checksums (body sum
   vs. published total), suppressed-cell counts, unrecognized policy types, and
   any warnings. **Check this after adding a quarter.**
@@ -55,6 +71,8 @@ one with the newest pull-timestamp in its filename wins.
   position, because column counts drift across quarters), keys the quarter off the
   filename, keeps NAIC as a string, treats a literal `.` as suppressed (never 0),
   detects and excludes the `Total` footer row (and uses it as a checksum).
+- `config/carrier_groups.csv` — editable NAIC → parent-group mapping used by the API.
+- `api/flpc/` — query engine, MCP server and REST API (see docs/API.md).
 - `web/index.html` + `web/app.js` — the static frontend (Plotly is vendored in
   `web/vendor/` so it works offline).
 

@@ -8,3 +8,10 @@ validation_report.txt
 # NOTE: web/data.js IS tracked on purpose so the site works wherever the
 # vault syncs, without needing Python to regenerate it. Re-run update.bat
 # after adding a quarter to refresh it.
+
+# normalized SQLite store for the API / MCP server (rebuilt from the .xlsx files)
+data/
+
+# local secrets and the docker-compose drop folder
+.env
+incoming/

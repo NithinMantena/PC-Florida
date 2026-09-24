@@ -1,0 +1,43 @@
+# Alternative: run the server behind its own Tailscale node with Funnel.
+# Gives a public URL like https://pc-florida.<your-tailnet>.ts.net (port 443)
+# without touching the host's Tailscale setup.
+#
+#   1. Tailscale admin: create an auth key (Settings -> Keys), and make sure the
+#      tailnet policy allows Funnel for this node (nodeAttrs "funnel").
+#   2. .env: TS_AUTHKEY=tskey-auth-...  and  FLPC_API_KEY=...
+#   3. docker compose -f docker-compose.tailscale.yml up -d --build
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: pc-florida-tailscale
+    hostname: ${TS_HOSTNAME:-pc-florida}
+    restart: unless-stopped
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?Set TS_AUTHKEY in .env}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./deploy/tailscale/serve.json:/config/serve.json:ro
+
+  pc-florida:
+    build: .
+    image: pc-florida:latest
+    container_name: pc-florida
+    restart: unless-stopped
+    network_mode: service:tailscale      # reachable at 127.0.0.1:8000 inside the Tailscale node
+    depends_on: [tailscale]
+    environment:
+      FLPC_API_KEY: ${FLPC_API_KEY:?Set FLPC_API_KEY in .env}
+      FLPC_PUBLIC_URL: ${FLPC_PUBLIC_URL:-}
+    volumes:
+      - ${FLPC_DATA_DIR:-./incoming}:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  tailscale-state:

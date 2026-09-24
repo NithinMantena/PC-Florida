@@ -23,7 +23,10 @@ Design notes (see Florida_PC_PRD.md):
   * Re-running is idempotent and, when the same period appears twice, the file
     with the newest pull-timestamp in its name wins.
 
-Run:  python etl/ingest.py
+Outputs: web/data.js (static explorer), data/florida_pc.sqlite (API / MCP
+server store) and validation_report.txt.
+
+Run:  python etl/ingest.py            (see --help for input/output options)
 """
 
 from __future__ import annotations
@@ -46,6 +49,8 @@ DATA_DIR = os.path.dirname(ETL_DIR)                 # the "Florida P&C" folder
 WEB_DIR = os.path.join(DATA_DIR, "web")
 OUT_DATA_JS = os.path.join(WEB_DIR, "data.js")
 OUT_REPORT = os.path.join(DATA_DIR, "validation_report.txt")
+OUT_SQLITE = os.path.join(DATA_DIR, "data", "florida_pc.sqlite")
+DEFAULT_GROUPS = os.path.join(DATA_DIR, "config", "carrier_groups.csv")
 
 # --------------------------------------------------------------------------- #
 # Header -> canonical metric mapping
@@ -89,10 +94,20 @@ B_METRIC_RULES = [
     ("claims_opened", lambda h: h.startswith("total number of claims opened")),
     ("claims_closed", lambda h: h.startswith("total number of claims closed")),
     ("claims_pending", lambda h: h.startswith("total number of claims pending")),
+    # --- claims dispute resolution (count; newer quarters only). "another
+    #     form of alternate" must precede the generic "alternative" rule. ---
+    ("claims_adr_other", lambda h: "claims where another form of alternate dispute resolution" in h),
+    ("claims_adr", lambda h: "claims where alternative dispute resolution" in h),
+    ("claims_mediation", lambda h: "claims where mediation" in h),
+    ("claims_arbitration", lambda h: "claims where arbitration" in h),
+    ("claims_appraisal", lambda h: "claims where appraisal" in h),
+    ("claims_sinkhole_eval", lambda h: "claims where neutral evaluation for sink holes" in h),
+    ("claims_settlement_conf", lambda h: "claims where settlement conference" in h),
     # --- lawsuits (count; newest quarters only) ---
     ("lawsuits_closed_consumer", lambda h: "lawsuits closed with consideration" in h),
     ("lawsuits_closed", lambda h: h.startswith("number of lawsuits closed")),
     ("lawsuits_opened", lambda h: h.startswith("number of lawsuits opened")),
+    ("lawsuits_open_begin", lambda h: "lawsuits open at beginning" in h),
     ("lawsuits_open_end", lambda h: "lawsuits open at end" in h),
 ]
 
@@ -222,6 +237,49 @@ def parse_policy_type(pt: str):
     return line, is_wind_only, (line == "Other")
 
 
+# Short, stable IDs for policy types (used by the API / MCP tools). Built by
+# ordered phrase substitution so newly-introduced types still get a readable
+# slug without code changes. Each rule: (phrase, token, product_family|None).
+_PT_RULES = [
+    ("homeowners (excl tenant and condo) - owner occupied", "ho", "ho"),
+    ("condominium unit owners", "condo_unit", "condo_unit"),
+    ("dwelling/fire - mobile homeowners", "mh_df", "mh_df"),
+    ("mobile homeowners", "mh", "mh"),
+    ("(homeowners association)", "hoa", None),
+    ("(apartment buildings)", "apartments", None),
+    ("(condo associations only)", "condo_assoc", None),
+    ("(excl condo associations)", "excl_condo_assoc", None),
+    ("dwelling/fire", "df", "df"),
+    ("allied lines", "allied", "allied"),
+    ("primary private flood", "flood_primary", "flood"),
+    ("excess private flood", "flood_excess", "flood"),
+    ("farmowners", "farm", "farm"),
+    ("tenants", "tenants", "tenants"),
+    ("cmp", "cmp", "cmp"),
+    ("wind only dwellings", "wind", None),
+    ("wind only", "wind", None),
+]
+
+
+def policy_type_id(pt: str):
+    """Return (pt_id, product) e.g. ('c_cmp_condo_assoc', 'cmp')."""
+    low = re.sub(r"\s+", " ", pt.strip().lower())
+    prefix = "o"
+    for pre, code in (("commercial residential", "c"), ("personal residential", "p")):
+        if low.startswith(pre):
+            prefix, low = code, low[len(pre):]
+            break
+    product = None
+    for phrase, token, fam in _PT_RULES:
+        if phrase in low:
+            low = low.replace(phrase, f" {token} ")
+            product = product or fam
+    slug = re.sub(r"[^a-z0-9]+", "_", low).strip("_") or "unknown"
+    if product is None:
+        product = "wind" if "wind only" in pt.lower() else slug
+    return f"{prefix}_{slug}", product
+
+
 # --------------------------------------------------------------------------- #
 # Parse one Type B workbook
 # --------------------------------------------------------------------------- #
@@ -340,39 +398,75 @@ def parse_type_a(path, period, period_end, warnings):
 # Main
 # --------------------------------------------------------------------------- #
 
-def discover_files():
-    """Return {('B'|'A', period): path} keeping newest pull-timestamp per slot."""
+def discover_files(input_dirs=None):
+    """Return {('B'|'A', period): path} keeping newest pull-timestamp per slot.
+
+    Several input folders may be given (e.g. the repo's bundled history plus a
+    mounted drop-folder); the same newest-timestamp-wins rule applies across
+    all of them.
+    """
     chosen = {}
-    for path in glob.glob(os.path.join(DATA_DIR, "*.xlsx")):
-        base = os.path.basename(path)
-        low = base.lower()
-        if "by_company_and_policy_type" in low:
-            ftype = "B"
-        elif "by_company_and_commercial_personal" in low:
-            ftype = "A"
-        else:
-            continue
-        per = parse_period_from_filename(base)
-        if not per:
-            continue
-        period, _ = per
-        key = (ftype, period)
-        ts = parse_timestamp_token(base)
-        if key not in chosen or ts > chosen[key][1]:
-            chosen[key] = (path, ts)
+    for d in (input_dirs or [DATA_DIR]):
+        for path in glob.glob(os.path.join(d, "*.xlsx")):
+            base = os.path.basename(path)
+            low = base.lower()
+            if "by_company_and_policy_type" in low:
+                ftype = "B"
+            elif "by_company_and_commercial_personal" in low:
+                ftype = "A"
+            else:
+                continue
+            per = parse_period_from_filename(base)
+            if not per:
+                continue
+            period, _ = per
+            key = (ftype, period)
+            ts = parse_timestamp_token(base)
+            if key not in chosen or ts > chosen[key][1]:
+                chosen[key] = (path, ts)
     return {k: v[0] for k, v in chosen.items()}
 
 
-def main():
-    files = discover_files()
+def _period_sort_key(p):
+    return (int(p[:4]), int(p[-1]))
+
+
+def load_groups(path):
+    """Read the hand-maintained NAIC -> parent-group mapping (CSV: naic,group).
+
+    Blank lines and lines starting with '#' are ignored. Missing file = no
+    groups (every company is its own standalone group).
+    """
+    groups = {}
+    if not path or not os.path.exists(path):
+        return groups
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [x.strip() for x in line.split(",", 1)]
+            if len(parts) != 2 or parts[0].lower() == "naic":
+                continue
+            groups[parts[0]] = parts[1]
+    return groups
+
+
+def group_slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+
+def build(input_dirs=None, groups_path=None):
+    """Parse every workbook and return the normalized dataset as a dict."""
+    files = discover_files(input_dirs)
     if not files:
-        print("No FLOIR workbooks found in", DATA_DIR)
-        sys.exit(1)
+        raise SystemExit(f"No FLOIR workbooks found in {input_dirs or [DATA_DIR]}")
 
     warnings = []
     facts_b, facts_a = [], []
     periods = {}                         # period -> metadata
     checksums = []                       # validation rows
+    totals = []                          # (file_type, period, metric, value)
     metrics_seen = set()
 
     for (ftype, period), path in sorted(files.items(), key=lambda kv: (kv[0][1], kv[0][0])):
@@ -390,6 +484,7 @@ def main():
             f, total, mets = parse_type_b(path, period_key, period_end, warnings)
             facts_b.extend(f)
             pmeta["has_B"] = True
+            pmeta["file_B"] = os.path.basename(path)
             if mets:
                 metrics_seen.update(mets)
             # checksum: sum body PIF vs Total-row PIF
@@ -397,14 +492,21 @@ def main():
             tot_pif = (total or {}).get("pif")
             checksums.append(("B", period_key, "pif", body_pif, tot_pif,
                               len(f), os.path.basename(path)))
+            for k, v in (total or {}).items():
+                if k != "_suppressed" and v is not None:
+                    totals.append(("B", period_key, k, v))
         else:
             f, total = parse_type_a(path, period_key, period_end, warnings)
             facts_a.extend(f)
             pmeta["has_A"] = True
+            pmeta["file_A"] = os.path.basename(path)
             body_pif = sum(x.get("a_pif") or 0 for x in f)
             tot_pif = (total or {}).get("a_pif")
             checksums.append(("A", period_key, "a_pif", body_pif, tot_pif,
                               len(f), os.path.basename(path)))
+            for k, v in (total or {}).items():
+                if v is not None:
+                    totals.append(("A", period_key, k, v))
 
     # ---- build dimension tables ----------------------------------------- #
     companies = {}
@@ -416,19 +518,24 @@ def main():
             c["names"][nm] = c["names"].get(nm, 0) + 1
         c["periods"].add(fct["p"])
 
-    period_order = sorted(periods.keys(), key=lambda p: (int(p[:4]), int(p[-1])))
+    period_order = sorted(periods.keys(), key=_period_sort_key)
+    group_map = load_groups(groups_path)
     companies_out = {}
     for naic, c in companies.items():
         # most frequent name = display label
         display = max(c["names"].items(), key=lambda kv: kv[1])[0] if c["names"] else naic
-        pers = sorted(c["periods"], key=lambda p: (int(p[:4]), int(p[-1])))
+        pers = sorted(c["periods"], key=_period_sort_key)
         companies_out[naic] = {
             "naic": naic,
             "name": display,
             "names": sorted(c["names"].keys()),
             "first": pers[0] if pers else None,
             "last": pers[-1] if pers else None,
+            "group": group_map.get(naic),
         }
+    for naic in group_map:
+        if naic not in companies_out:
+            warnings.append(f"[groups] NAIC {naic} ({group_map[naic]}) not found in any workbook")
 
     policy_types = {}
     for fct in facts_b:
@@ -436,34 +543,199 @@ def main():
         if pt and pt not in policy_types:
             line, wind_only, _ = parse_policy_type(pt)
             policy_types[pt] = {"policy_type": pt, "line": line, "is_wind_only": wind_only}
+    # short IDs (deterministic; de-duplicated if two strings slug the same)
+    used = set()
+    for pt in sorted(policy_types):
+        pid, product = policy_type_id(pt)
+        base, n = pid, 2
+        while pid in used:
+            pid, n = f"{base}_{n}", n + 1
+        used.add(pid)
+        policy_types[pt].update({"id": pid, "product": product})
 
-    data = {
+    # canonical metric order = rule order
+    metric_order = [k for k, _ in B_METRIC_RULES if k in metrics_seen]
+
+    return {
         "generated_at": _now(),
+        "input_dirs": list(input_dirs or [DATA_DIR]),
+        "files": files,
+        "periods_meta": periods,
+        "period_order": period_order,
         "periods": [periods[p] for p in period_order],
         "companies": companies_out,
         "policy_types": policy_types,
-        "metrics_b": sorted(metrics_seen),
+        "metrics_b": metric_order,
         "facts_b": facts_b,
         "facts_a": facts_a,
+        "checksums": checksums,
+        "totals": totals,
+        "warnings": warnings,
     }
 
-    os.makedirs(WEB_DIR, exist_ok=True)
-    with open(OUT_DATA_JS, "w", encoding="utf-8") as fh:
+
+def write_data_js(data, path=OUT_DATA_JS):
+    """The static web explorer's dataset (unchanged shape)."""
+    web = {
+        "generated_at": data["generated_at"],
+        "periods": data["periods"],
+        "companies": {n: {k: v for k, v in c.items() if k != "group"}
+                      for n, c in data["companies"].items()},
+        "policy_types": {pt: {k: d[k] for k in ("policy_type", "line", "is_wind_only")}
+                         for pt, d in data["policy_types"].items()},
+        "metrics_b": sorted(data["metrics_b"]),
+        "facts_b": data["facts_b"],
+        "facts_a": data["facts_a"],
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("// AUTO-GENERATED by etl/ingest.py — do not edit by hand.\n")
         fh.write("window.FL_DATA = ")
-        json.dump(data, fh, ensure_ascii=False, separators=(",", ":"))
+        json.dump(web, fh, ensure_ascii=False, separators=(",", ":"))
         fh.write(";\n")
 
-    write_report(files, periods, period_order, checksums, warnings,
-                 facts_b, facts_a, companies_out, policy_types, metrics_seen)
 
-    print(f"OK  periods={len(period_order)}  facts_B={len(facts_b)}  "
-          f"facts_A={len(facts_a)}  companies={len(companies_out)}  "
-          f"policy_types={len(policy_types)}")
-    print(f"    wrote {OUT_DATA_JS}")
-    print(f"    wrote {OUT_REPORT}")
-    if warnings:
-        print(f"    {len(warnings)} warning(s) — see report")
+LINE_CODE = {"Commercial Residential": "commercial", "Personal Residential": "personal"}
+
+
+def write_sqlite(data, path=OUT_SQLITE):
+    """Write the normalized store the API / MCP server queries.
+
+    Written to a temp file and atomically swapped in, so a running server
+    never sees a half-built database.
+    """
+    import sqlite3
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    con = sqlite3.connect(tmp)
+    metrics = data["metrics_b"]
+    order = data["period_order"]
+    pidx = {p: _period_sort_key(p)[0] * 4 + _period_sort_key(p)[1] - 1 for p in order}
+    comps = data["companies"]
+
+    # groups: mapped companies share a group; everyone else is standalone
+    groups = {}
+    comp_group = {}
+    for naic, c in comps.items():
+        if c.get("group"):
+            gid = group_slug(c["group"])
+            groups.setdefault(gid, {"name": c["group"], "members": []})["members"].append(naic)
+        else:
+            gid = naic
+            groups[gid] = {"name": c["name"], "members": [naic], "standalone": True}
+        comp_group[naic] = gid
+
+    cur = con.cursor()
+    cur.executescript(f"""
+        CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE periods(period TEXT PRIMARY KEY, idx INTEGER, year INTEGER,
+            quarter INTEGER, period_end TEXT, pulled_at TEXT, source_file TEXT);
+        CREATE TABLE companies(naic TEXT PRIMARY KEY, name TEXT, names TEXT,
+            group_id TEXT, group_name TEXT, first_period TEXT, last_period TEXT);
+        CREATE TABLE groups(group_id TEXT PRIMARY KEY, group_name TEXT,
+            standalone INTEGER, members TEXT);
+        CREATE TABLE policy_types(pt_id TEXT PRIMARY KEY, policy_type TEXT,
+            line TEXT, product TEXT, wind_only INTEGER);
+        CREATE TABLE metrics(metric TEXT PRIMARY KEY, first_period TEXT,
+            last_period TEXT, n_periods INTEGER);
+        CREATE TABLE facts(period TEXT, idx INTEGER, naic TEXT, group_id TEXT,
+            pt_id TEXT, line TEXT, product TEXT, wind_only INTEGER,
+            {", ".join(f"{m} REAL" for m in metrics)},
+            PRIMARY KEY(period, naic, pt_id));
+        CREATE TABLE suppressed(period TEXT, naic TEXT, pt_id TEXT, metric TEXT);
+        CREATE TABLE published_totals(file_type TEXT, period TEXT, metric TEXT, value REAL);
+        CREATE TABLE summary_a(period TEXT, naic TEXT, company TEXT,
+            a_pif REAL, a_pif_commercial REAL, a_pif_personal REAL,
+            a_dpw REAL, a_dpw_commercial REAL, a_dpw_personal REAL);
+    """)
+    cur.executemany("INSERT INTO meta VALUES (?,?)", [
+        ("generated_at", data["generated_at"]),
+        ("latest_period", order[-1]),
+        ("source_files", json.dumps(sorted(os.path.basename(p) for p in data["files"].values()))),
+    ])
+    cur.executemany("INSERT INTO periods VALUES (?,?,?,?,?,?,?)", [
+        (p, pidx[p], int(p[:4]), int(p[-1]), data["periods_meta"][p]["period_end"],
+         data["periods_meta"][p]["pulled_at"], data["periods_meta"][p].get("file_B"))
+        for p in order])
+    cur.executemany("INSERT INTO companies VALUES (?,?,?,?,?,?,?)", [
+        (n, c["name"], " | ".join(c["names"]), comp_group[n], groups[comp_group[n]]["name"],
+         c["first"], c["last"]) for n, c in comps.items()])
+    cur.executemany("INSERT INTO groups VALUES (?,?,?,?)", [
+        (gid, g["name"], 1 if g.get("standalone") else 0, ",".join(sorted(g["members"])))
+        for gid, g in groups.items()])
+    pts = data["policy_types"]
+    cur.executemany("INSERT INTO policy_types VALUES (?,?,?,?,?)", [
+        (d["id"], pt, LINE_CODE.get(d["line"], "other"), d["product"], int(d["is_wind_only"]))
+        for pt, d in pts.items()])
+
+    avail = defaultdict(set)
+    rows, sup_rows = [], []
+    for f in data["facts_b"]:
+        if not f["pt"]:
+            continue
+        d = pts[f["pt"]]
+        vals = [f.get(m) for m in metrics]
+        for m, v in zip(metrics, vals):
+            if v is not None:
+                avail[m].add(f["p"])
+        rows.append((f["p"], pidx[f["p"]], f["naic"], comp_group[f["naic"]], d["id"],
+                     LINE_CODE.get(d["line"], "other"), d["product"], int(d["is_wind_only"]),
+                     *vals))
+        for m in f.get("_sup", []):
+            sup_rows.append((f["p"], f["naic"], d["id"], m))
+    cur.executemany(f"INSERT OR REPLACE INTO facts VALUES ({','.join('?' * (8 + len(metrics)))})", rows)
+    cur.executemany("INSERT INTO suppressed VALUES (?,?,?,?)", sup_rows)
+    cur.executemany("INSERT INTO metrics VALUES (?,?,?,?)", [
+        (m, min(avail[m], key=_period_sort_key), max(avail[m], key=_period_sort_key), len(avail[m]))
+        for m in metrics if avail[m]])
+    cur.executemany("INSERT INTO published_totals VALUES (?,?,?,?)", data["totals"])
+    a_cols = ["a_pif", "a_pif_commercial", "a_pif_personal", "a_dpw", "a_dpw_commercial", "a_dpw_personal"]
+    cur.executemany("INSERT INTO summary_a VALUES (?,?,?,?,?,?,?,?,?)", [
+        (f["p"], f["naic"], f.get("company"), *[f.get(k) for k in a_cols]) for f in data["facts_a"]])
+    cur.executescript("""
+        CREATE INDEX ix_facts_idx ON facts(idx);
+        CREATE INDEX ix_facts_naic ON facts(naic);
+        CREATE INDEX ix_facts_group ON facts(group_id);
+    """)
+    con.commit()
+    con.close()
+    os.replace(tmp, path)
+
+
+def main(argv=None):
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Rebuild the Florida P&C dataset from FLOIR workbooks.")
+    ap.add_argument("--input", action="append", dest="inputs",
+                    help="folder of .xlsx workbooks (repeatable; default: repo root)")
+    ap.add_argument("--groups", default=DEFAULT_GROUPS, help="carrier group CSV (naic,group)")
+    ap.add_argument("--sqlite", default=OUT_SQLITE, help="SQLite output path")
+    ap.add_argument("--no-web", action="store_true", help="skip writing web/data.js")
+    ap.add_argument("--no-report", action="store_true", help="skip validation_report.txt")
+    args = ap.parse_args(argv)
+
+    data = build(args.inputs, args.groups)
+    outputs = []
+    if not args.no_web:
+        write_data_js(data)
+        outputs.append(OUT_DATA_JS)
+    if args.sqlite:
+        write_sqlite(data, args.sqlite)
+        outputs.append(args.sqlite)
+    if not args.no_report:
+        write_report(data)
+        outputs.append(OUT_REPORT)
+
+    print(f"OK  periods={len(data['period_order'])}  facts_B={len(data['facts_b'])}  "
+          f"facts_A={len(data['facts_a'])}  companies={len(data['companies'])}  "
+          f"policy_types={len(data['policy_types'])}")
+    for o in outputs:
+        print(f"    wrote {o}")
+    if data["warnings"]:
+        print(f"    {len(data['warnings'])} warning(s) — see report")
 
 
 def _now():
@@ -471,12 +743,16 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
-def write_report(files, periods, period_order, checksums, warnings,
-                 facts_b, facts_a, companies, policy_types, metrics_seen):
+def write_report(data, path=OUT_REPORT):
+    files, periods, period_order = data["files"], data["periods_meta"], data["period_order"]
+    checksums, warnings = data["checksums"], data["warnings"]
+    facts_b, facts_a = data["facts_b"], data["facts_a"]
+    companies, policy_types = data["companies"], data["policy_types"]
+    metrics_seen = data["metrics_b"]
     L = []
     L.append("FLORIDA P&C — INGEST VALIDATION REPORT")
     L.append(f"generated: {_now()}")
-    L.append(f"input dir: {DATA_DIR}")
+    L.append(f"input dir(s): {', '.join(data['input_dirs'])}")
     L.append("")
     L.append(f"files ingested: {len(files)}")
     L.append(f"periods: {len(period_order)}  ({period_order[0]} .. {period_order[-1]})")
@@ -512,8 +788,16 @@ def write_report(files, periods, period_order, checksums, warnings,
     L.append("POLICY TYPES DISCOVERED:")
     for pt in sorted(policy_types):
         d = policy_types[pt]
-        L.append(f"  [{d['line'][:4]}{' WIND' if d['is_wind_only'] else '    '}] {pt}")
-    with open(OUT_REPORT, "w", encoding="utf-8") as fh:
+        L.append(f"  [{d['line'][:4]}{' WIND' if d['is_wind_only'] else '    '}] {d['id']:<24} {pt}")
+    L.append("")
+    grouped = defaultdict(list)
+    for c in companies.values():
+        if c.get("group"):
+            grouped[c["group"]].append(c["name"])
+    L.append(f"CARRIER GROUPS ({len(grouped)} multi-NAIC groups; others standalone):")
+    for g in sorted(grouped):
+        L.append(f"  {g}: {'; '.join(sorted(grouped[g]))}")
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(L) + "\n")
 
 

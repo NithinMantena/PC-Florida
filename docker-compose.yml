@@ -1,0 +1,33 @@
+# Florida P&C data server — add this service to your existing Docker stack.
+#
+# Exposes one port with every channel:
+#   /mcp            MCP (Claude connectors, ChatGPT connectors, Claude Code, ...)
+#   /api/*          REST + /openapi.json (ChatGPT Custom GPT Actions, scripts)
+#   /health         unauthenticated health check
+#
+# Put secrets in a .env file next to this file (see .env.example), then:
+#   docker compose up -d --build
+#
+# Public HTTPS for Claude/ChatGPT: if Tailscale already runs on this host,
+#   sudo tailscale funnel --bg --https=8443 http://127.0.0.1:8000
+# (or use docker-compose.tailscale.yml for a dedicated Tailscale sidecar).
+services:
+  pc-florida:
+    build: .
+    image: pc-florida:latest
+    container_name: pc-florida
+    restart: unless-stopped
+    environment:
+      FLPC_API_KEY: ${FLPC_API_KEY:?Set FLPC_API_KEY in .env}
+      FLPC_PUBLIC_URL: ${FLPC_PUBLIC_URL:-}
+    volumes:
+      # Drop new quarterly .xlsx files (and optionally carrier_groups.csv) here.
+      - ${FLPC_DATA_DIR:-./incoming}:/data
+    ports:
+      - "${FLPC_BIND:-127.0.0.1}:${FLPC_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

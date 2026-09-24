@@ -1,0 +1,121 @@
+# Carrier group mapping: NAIC code -> parent group (edit freely).
+#
+# Used by the API / MCP server to roll individual NAIC companies up into
+# corporate groups (group_by="group", groups=[...] filters, company_profile of a
+# group). Any company NOT listed here is treated as its own standalone group.
+# Rebuild (or just restart the server / wait for auto-reload) after editing.
+#
+# Seeded with well-known multi-company groups active in Florida residential.
+# Ownership changes over time; this mapping applies to ALL quarters.
+naic,group
+# --- Florida domestic groups ---
+10861,Universal Insurance Holdings
+10759,Universal Insurance Holdings
+12944,HCI Group
+15885,HCI Group
+10132,Florida Peninsula Holdings
+12482,Florida Peninsula Holdings
+12359,Florida Peninsula Holdings
+10688,Florida Family
+13648,Florida Family
+31216,Florida Farm Bureau
+21817,Florida Farm Bureau
+12968,American Coastal Insurance Corp (fka United Insurance Holdings)
+10969,American Coastal Insurance Corp (fka United Insurance Holdings)
+17179,Tower Hill
+11027,Tower Hill
+29050,Tower Hill
+12538,Tower Hill
+# --- National groups ---
+10835,Allstate
+30511,Allstate
+25941,USAA
+25968,USAA
+18600,USAA
+21253,USAA
+10111,Assurant
+42978,Assurant
+23469,American Modern (Munich Re)
+42722,American Modern (Munich Re)
+12314,American Modern (Munich Re)
+41998,American Modern (Munich Re)
+13142,Progressive (ASI)
+10872,Progressive (ASI)
+12196,Progressive (ASI)
+14042,Progressive (ASI)
+24252,Progressive (ASI)
+17221,American Family (Homesite)
+29068,American Family (Homesite)
+11185,Farmers
+11800,Farmers
+40169,Farmers
+21709,Farmers
+23787,Nationwide
+37877,Nationwide
+10948,Nationwide
+18961,Nationwide
+23035,Liberty Mutual
+33588,Liberty Mutual
+24724,Liberty Mutual
+44393,Liberty Mutual
+24082,Liberty Mutual
+24074,Liberty Mutual
+10190,Auto-Owners
+18988,Auto-Owners
+16578,Stillwater
+25180,Stillwater
+20281,Chubb
+20303,Chubb
+20346,Chubb
+20397,Chubb
+26417,Chubb
+22667,Chubb
+43575,Chubb
+22748,Chubb
+19402,AIG
+19380,AIG
+23809,AIG
+23841,AIG
+23817,AIG
+25674,Travelers
+25658,Travelers
+25615,Travelers
+25666,Travelers
+25682,Travelers
+25623,Travelers
+24767,Travelers
+37478,Hartford
+30104,Hartford
+29424,Hartford
+19682,Hartford
+29459,Hartford
+20443,CNA
+35289,CNA
+20427,CNA
+20478,CNA
+20494,CNA
+20508,CNA
+16535,Zurich
+26247,Zurich
+39306,Zurich
+39217,QBE
+37257,QBE
+38970,Markel
+28932,Markel
+26344,Great American
+16691,Great American
+26832,Great American
+22136,Great American
+42803,GuideOne
+15032,GuideOne
+14559,GuideOne
+42331,GuideOne
+22292,Hanover
+36064,Hanover
+22306,Hanover
+22551,Mitsui Sumitomo
+20362,Mitsui Sumitomo
+32603,W. R. Berkley
+38911,W. R. Berkley
+21482,FM Global
+10014,FM Global

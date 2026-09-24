@@ -1,0 +1,16 @@
+.git
+.github
+.gitignore
+web
+data
+incoming
+deploy
+docs
+api/tests
+**/__pycache__
+**/*.pyc
+validation_report.txt
+*.md
+update.bat
+index.html
+.env
