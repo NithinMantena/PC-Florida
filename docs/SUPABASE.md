@@ -17,6 +17,21 @@ The `flpc` schema is not added to the project's exposed API schemas, so the read
 list's anon/authenticated keys cannot see it. Only the function, which connects to
 Postgres directly, can read it.
 
+## Quick setup: one script
+
+On a PC with `gh` (logged in), Node and Docker Desktop, run this from the repo root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\connect-supabase.ps1
+```
+
+It asks for one Supabase personal access token
+(https://supabase.com/dashboard/account/tokens) and then does steps 1–4 below. It
+also sets up this PC: the `flpc` CLI, the OpenClaw skill, the Docker MCP Toolkit server
+(profile `nithin_mantena`) and Claude Code. At the end it prints the connector URL
+for claude.ai and ChatGPT. It is safe to re-run. `-RotateTokens` replaces the read
+tokens, and `-Skip*` switches leave out parts. The manual steps below do the same thing.
+
 ---
 
 ## 1. Create the database objects (SQL Editor)
