@@ -1,0 +1,76 @@
+name: supabase
+
+# Keeps the hosted API current:
+#   deploy  the `flpc` Edge Function   (needs SUPABASE_ACCESS_TOKEN + SUPABASE_PROJECT_REF)
+#   load    the data from the .xlsx    (needs SUPABASE_PROJECT_REF + FLPC_LOAD_TOKEN)
+# Both are idempotent. Adding a quarter = commit its workbook(s) to main.
+# Until the secrets exist the steps are skipped with a notice (see docs/SUPABASE.md).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/**"
+      - "*.xlsx"
+      - "etl/**"
+      - "config/**"
+      - ".github/workflows/supabase.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: supabase
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+    steps:
+      - id: gate
+        run: |
+          if [ -n "$SUPABASE_ACCESS_TOKEN" ] && [ -n "$PROJECT_REF" ]; then echo "run=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::deploy skipped: add the SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF repository secrets"; fi
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - if: steps.gate.outputs.run == 'true'
+        run: supabase functions deploy flpc --project-ref "$PROJECT_REF" --no-verify-jwt --use-api
+
+  load:
+    needs: deploy
+    runs-on: ubuntu-latest
+    env:
+      FLPC_URL: ${{ secrets.FLPC_URL }}
+      PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+      FLPC_LOAD_TOKEN: ${{ secrets.FLPC_LOAD_TOKEN }}
+    steps:
+      - id: gate
+        run: |
+          if [ -z "$FLPC_URL" ] && [ -n "$PROJECT_REF" ]; then FLPC_URL="https://$PROJECT_REF.supabase.co/functions/v1/flpc"; fi
+          echo "FLPC_URL=$FLPC_URL" >> "$GITHUB_ENV"
+          if [ -n "$FLPC_URL" ] && [ -n "$FLPC_LOAD_TOKEN" ]; then echo "run=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::load skipped: add the SUPABASE_PROJECT_REF and FLPC_LOAD_TOKEN repository secrets"; fi
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: steps.gate.outputs.run == 'true'
+        run: pip install openpyxl==3.1.5
+      - if: steps.gate.outputs.run == 'true'
+        name: rebuild from the workbooks and replace the hosted data
+        run: python etl/ingest.py --no-web --sqlite "$RUNNER_TEMP/flpc.sqlite" --push
+      - if: steps.gate.outputs.run == 'true'
+        name: health
+        run: curl -fsS "$FLPC_URL/health"
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-report
+          path: validation_report.txt

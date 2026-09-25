@@ -1,0 +1,434 @@
+{
+  "server": {
+    "name": "florida-pc",
+    "version": "2.0.0",
+    "instructions": "Florida residential P&C insurance market data (FLOIR QUASR / Quarterly-MIR), quarterly by company (NAIC) x policy type, 2022Q2 onward: policies in force, TIV/exposure, premium, new/cancelled/nonrenewed/takeout flows, claims, lawsuits.\nStart with get_catalog (metrics, policy types, periods). Drill down: timeseries -> compare_periods (who drove a change) -> compare_periods with companies=[...] and group_by='policy_type' (what drove it). Use rank for league tables/market share, company_profile for a one-call carrier summary, market_overview for a quarter headline. Results are CSV; $ columns are scaled ($K/$M/$B shown in headers)."
+  },
+  "operations": [
+    {
+      "name": "get_catalog",
+      "rest": "/api/catalog",
+      "summary": "Everything available: periods, metrics, policy types, groups, syntax, workflow. Call first.",
+      "description": "Everything available: periods, metric ids/definitions (base + derived), policy type ids, carrier groups, filter/period syntax, caveats and the recommended drill-down workflow. Call first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "find_companies",
+      "rest": "/api/find_companies",
+      "summary": "Search companies by name, former name, group or NAIC",
+      "description": "Search companies by (current or former) name, group or NAIC. Returns NAIC, group, name history, active range, latest PIF/TIV and rank.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Name fragment, group name or NAIC"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max results (1-50)",
+            "default": 10
+          },
+          "period": {
+            "type": "string",
+            "description": "Size columns as of this period: '2026Q1', 'latest', 'latest-1', 'latest-4'"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "timeseries",
+      "rest": "/api/timeseries",
+      "summary": "Metric(s) over quarters for any slice, optionally split by a dimension",
+      "description": "Metric(s) over quarters for any slice, optionally split by a dimension. Use to spot trends and the quarter where something changed. Default range: all quarters.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "metrics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Metric id(s), e.g. ['tiv'] or ['pif','avg_premium']"
+          },
+          "group_by": {
+            "type": "string",
+            "description": "Split by: company | group | line | policy_type | product | wind_only (max 2, comma-separated)"
+          },
+          "start": {
+            "type": "string",
+            "description": "First period (default: earliest), e.g. '2026Q1', 'latest', 'latest-1', 'latest-4'"
+          },
+          "end": {
+            "type": "string",
+            "description": "Last period (default: latest)"
+          },
+          "transform": {
+            "type": "string",
+            "enum": [
+              "value",
+              "qoq",
+              "yoy",
+              "diff",
+              "share"
+            ],
+            "default": "value",
+            "description": "value | qoq (% vs prior qtr) | yoy (% vs year ago) | diff (abs QoQ change) | share (% of slice total)"
+          },
+          "top_n": {
+            "type": "integer",
+            "description": "When grouped: keep the N largest series (+ 'All others' and 'Total' rows)",
+            "default": 10
+          },
+          "companies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Company names or NAIC codes (fuzzy; e.g. ['American Integrity','10064'])"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Carrier groups (e.g. ['Universal Insurance Holdings'])"
+          },
+          "exclude_companies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Companies to exclude (e.g. ['Citizens'] for the private market)"
+          },
+          "line": {
+            "type": "string",
+            "enum": [
+              "commercial",
+              "personal",
+              "all"
+            ],
+            "description": "Line of business; omit for both"
+          },
+          "policy_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Policy type ids, product families or id prefixes (see get_catalog), e.g. ['cmp'], ['c_condo_assoc_wind'], ['p_ho']"
+          },
+          "wind_only": {
+            "type": "boolean",
+            "description": "true = only wind-only policy types; false = exclude them"
+          },
+          "raw": {
+            "type": "boolean",
+            "description": "true = unscaled raw dollars"
+          }
+        },
+        "required": [
+          "metrics"
+        ]
+      }
+    },
+    {
+      "name": "compare_periods",
+      "rest": "/api/compare_periods",
+      "summary": "Attribute the change in a metric between two quarters (who/what drove it)",
+      "description": "Attribute the change in a metric between two quarters: rows sorted by absolute change with % change and share of the net change, plus 'All others' and 'Total'. Answers 'who/what drove it'. Use group_by='policy_type' with companies=[...] to see which lines drove one carrier's change.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string",
+            "description": "Metric id, e.g. 'tiv'"
+          },
+          "period_from": {
+            "type": "string",
+            "description": "'2026Q1', 'latest', 'latest-1', 'latest-4'",
+            "default": "latest-1"
+          },
+          "period_to": {
+            "type": "string",
+            "description": "'2026Q1', 'latest', 'latest-1', 'latest-4'",
+            "default": "latest"
+          },
+          "group_by": {
+            "type": "string",
+            "description": "Split by: company | group | line | policy_type | product | wind_only (max 2, comma-separated)",
+            "default": "company"
+          },
+          "top_n": {
+            "type": "integer",
+            "description": "Rows to show before 'All others'",
+            "default": 15
+          },
+          "companies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Company names or NAIC codes (fuzzy; e.g. ['American Integrity','10064'])"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Carrier groups (e.g. ['Universal Insurance Holdings'])"
+          },
+          "exclude_companies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Companies to exclude (e.g. ['Citizens'] for the private market)"
+          },
+          "line": {
+            "type": "string",
+            "enum": [
+              "commercial",
+              "personal",
+              "all"
+            ],
+            "description": "Line of business; omit for both"
+          },
+          "policy_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Policy type ids, product families or id prefixes (see get_catalog), e.g. ['cmp'], ['c_condo_assoc_wind'], ['p_ho']"
+          },
+          "wind_only": {
+            "type": "boolean",
+            "description": "true = only wind-only policy types; false = exclude them"
+          },
+          "raw": {
+            "type": "boolean",
+            "description": "true = unscaled raw dollars"
+          }
+        },
+        "required": [
+          "metric"
+        ]
+      }
+    },
+    {
+      "name": "rank",
+      "rest": "/api/rank",
+      "summary": "League table / market share for one quarter",
+      "description": "League table for one quarter with market share of the slice (and optional change vs compare_to). Ratio metrics exclude entities under 100 PIF.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string",
+            "description": "Metric to rank by, e.g. 'dpw'"
+          },
+          "period": {
+            "type": "string",
+            "description": "'2026Q1', 'latest', 'latest-1', 'latest-4'",
+            "default": "latest"
+          },
+          "group_by": {
+            "type": "string",
+            "description": "Split by: company | group | line | policy_type | product | wind_only (max 2, comma-separated)",
+            "default": "company"
+          },
+          "top_n": {
+            "type": "integer",
+            "description": "Rows to show",
+            "default": 20
+          },
+          "compare_to": {
+            "type": "string",
+            "description": "Optional earlier period for change / share-change columns"
+          },
+          "extra_metrics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Extra metric columns, e.g. ['pif','avg_premium']"
+          },
+          "ascending": {
+            "type": "boolean",
+            "description": "Smallest first"
+          },
+          "companies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Company names or NAIC codes (fuzzy; e.g. ['American Integrity','10064'])"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Carrier groups (e.g. ['Universal Insurance Holdings'])"
+          },
+          "exclude_companies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Companies to exclude (e.g. ['Citizens'] for the private market)"
+          },
+          "line": {
+            "type": "string",
+            "enum": [
+              "commercial",
+              "personal",
+              "all"
+            ],
+            "description": "Line of business; omit for both"
+          },
+          "policy_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Policy type ids, product families or id prefixes (see get_catalog), e.g. ['cmp'], ['c_condo_assoc_wind'], ['p_ho']"
+          },
+          "wind_only": {
+            "type": "boolean",
+            "description": "true = only wind-only policy types; false = exclude them"
+          },
+          "raw": {
+            "type": "boolean",
+            "description": "true = unscaled raw dollars"
+          }
+        },
+        "required": [
+          "metric"
+        ]
+      }
+    },
+    {
+      "name": "company_profile",
+      "rest": "/api/company_profile",
+      "summary": "One-call carrier or group summary",
+      "description": "One-call carrier (or group) summary: key metrics with QoQ/YoY, statewide rank and share, commercial vs personal split, policy-type mix with QoQ, 8-quarter trend, group members.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "company": {
+            "type": "string",
+            "description": "Company name or NAIC"
+          },
+          "group": {
+            "type": "string",
+            "description": "Or a carrier group name"
+          },
+          "period": {
+            "type": "string",
+            "description": "'2026Q1', 'latest', 'latest-1', 'latest-4'",
+            "default": "latest"
+          },
+          "raw": {
+            "type": "boolean",
+            "description": "true = unscaled raw dollars"
+          }
+        }
+      }
+    },
+    {
+      "name": "market_overview",
+      "rest": "/api/market_overview",
+      "summary": "Quarter headline: totals, QoQ/YoY, movers, largest carriers",
+      "description": "Quarter headline for the market (or any slice): totals with QoQ/YoY and commercial/personal split, biggest TIV and PIF movers, largest carriers by TIV.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "'2026Q1', 'latest', 'latest-1', 'latest-4'",
+            "default": "latest"
+          },
+          "top_n": {
+            "type": "integer",
+            "description": "Movers per direction (1-25)",
+            "default": 5
+          },
+          "companies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Company names or NAIC codes (fuzzy; e.g. ['American Integrity','10064'])"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Carrier groups (e.g. ['Universal Insurance Holdings'])"
+          },
+          "exclude_companies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Companies to exclude (e.g. ['Citizens'] for the private market)"
+          },
+          "line": {
+            "type": "string",
+            "enum": [
+              "commercial",
+              "personal",
+              "all"
+            ],
+            "description": "Line of business; omit for both"
+          },
+          "policy_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Policy type ids, product families or id prefixes (see get_catalog), e.g. ['cmp'], ['c_condo_assoc_wind'], ['p_ho']"
+          },
+          "wind_only": {
+            "type": "boolean",
+            "description": "true = only wind-only policy types; false = exclude them"
+          },
+          "raw": {
+            "type": "boolean",
+            "description": "true = unscaled raw dollars"
+          }
+        }
+      }
+    },
+    {
+      "name": "run_sql",
+      "rest": "/api/sql",
+      "summary": "Read-only SQL over the normalized tables (escape hatch)",
+      "description": "Escape hatch: one read-only Postgres SELECT/WITH over the normalized tables. Prefer the other tools. Main table: facts(period, idx, naic, group_id, pt_id, line, product, wind_only, <metric columns>); also companies, groups, policy_types, periods, metrics. A bad query returns the full schema.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "A single read-only SELECT/WITH statement"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max rows (1-1000)",
+            "default": 200
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ]
+}

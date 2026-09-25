@@ -1,7 +1,17 @@
 # Florida P&C Data API + MCP Server
 
-One Docker container that serves the whole FLOIR dataset (every company, every
-policy type, every metric, every quarter) to LLM chatbots and anything else:
+> **Recommended setup: the hosted API on Supabase.** It is always on, has an HTTPS
+> URL and needs no tunnel or open port on your PC. See **[SUPABASE.md](SUPABASE.md)**
+> to set it up and **[INTEGRATIONS.md](INTEGRATIONS.md)** to connect Claude, ChatGPT,
+> Claude Code, local MCP clients (Docker) and OpenClaw. Both servers expose the same
+> 8 tools with the same arguments and answers. §4 below is the tool reference for both.
+>
+> Sections 1–3 and 6 describe the **self-hosted alternative**: the Python server in
+> `api/` running in Docker on your own machine, which needs Tailscale Funnel (or
+> similar) before cloud chatbots can reach it.
+
+The self-hosted server is one Docker container that serves the whole FLOIR dataset
+(every company, every policy type, every metric, every quarter):
 
 | Path | What | Used by |
 |------|------|---------|
@@ -162,7 +172,7 @@ header; pass `raw=true` for unscaled values.
 | `rank` | `POST /api/rank` | League table and market share for a quarter, optional change vs an earlier quarter, extra metric columns |
 | `company_profile` | `POST /api/company_profile` | One-call carrier or group summary: key metrics with QoQ/YoY, rank and share, line split, policy-type mix, 8-quarter trend, members |
 | `market_overview` | `POST /api/market_overview` | Quarter headline: totals with QoQ/YoY, commercial/personal split, top TIV/PIF movers, largest carriers |
-| `run_sql` | `POST /api/sql` | Read-only SQL over the normalized tables (escape hatch) |
+| `run_sql` | `POST /api/sql` | Read-only SQL over the normalized tables (escape hatch; SQLite when self-hosted, Postgres schema `flpc` when hosted) |
 
 REST endpoints return JSON `{title, context, tables:[{columns, rows}], notes}`, or
 compact text with `?format=text`.

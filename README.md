@@ -26,19 +26,24 @@ The left panel drives everything:
 Every view shows its active filter context at the top and exports the current
 table to CSV.
 
-## Chatbot API / MCP server (Claude, ChatGPT, ...)
+## Chatbot API / MCP server (Claude, ChatGPT, OpenClaw, ...)
 
-The same dataset is served to LLMs by a small Docker container (`api/`): an MCP
-server at `/mcp` plus a REST API with an OpenAPI spec at `/api`. It exposes 8 tools
-(catalog, company search, time series, period-over-period change attribution,
-rankings/market share, company profile, market overview, read-only SQL). Together
-they cover any company or group, metric, policy type and quarter, with compact
-token-cheap output. Run it on your Docker server behind Tailscale Funnel and
-connect Claude and ChatGPT to it. New quarters dropped into its data folder are
-picked up automatically.
+The same dataset is served to LLMs by a hosted API: a Supabase Edge Function in the
+(shared, free-tier) reading list project, with its own `flpc` Postgres schema. It
+exposes 8 tools: catalog, company search, time series, period-over-period change
+attribution, rankings/market share, company profile, market overview and read-only
+SQL. Together they cover any company or group, metric, policy type and quarter, with
+compact, token-cheap output. There are four ways in:
 
-See **[docs/API.md](docs/API.md)** for deployment, Tailscale, connecting each
-chatbot, and the tool reference.
+- **Remote MCP** `…/functions/v1/flpc/mcp`: Claude and ChatGPT connectors, Claude Code
+- **REST + OpenAPI** `…/functions/v1/flpc/api/*`: Custom GPT Actions, scripts
+- **Local MCP (stdio)**, `mcp/server.mjs` or the `pc-florida-mcp` Docker image: Claude Desktop config, Docker MCP Toolkit, local models
+- **OpenClaw**: the `openclaw/skills/florida-pc` skill plus the `flpc` CLI
+
+Setup: **[docs/SUPABASE.md](docs/SUPABASE.md)**. Connecting each client:
+**[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)**. How it works:
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. Tool reference and the self-hosted
+Docker alternative (`api/`): **[docs/API.md](docs/API.md)**.
 
 ## Adding a new quarter
 
@@ -49,8 +54,10 @@ chatbot, and the tool reference.
    - `*_by_company_and_policy_type_*` (the rich file — TIV, wind, flows, claims)
    - `*_by_company_and_commercial_personal_*` (company-level summary)
 2. Double-click **`update.bat`**.
+3. Commit and push the new `.xlsx` (and `web/data.js`) to `main`. GitHub then
+   reloads the hosted API's data automatically (see docs/SUPABASE.md).
 
-That re-runs the ETL over *all* `.xlsx` files in the folder and reopens the site.
+`update.bat` re-runs the ETL over *all* `.xlsx` files in the folder and reopens the site.
 No code changes are needed — new policy types and companies are auto-discovered,
 and the time axis extends automatically. If two files cover the same quarter, the
 one with the newest pull-timestamp in its filename wins.
@@ -72,7 +79,10 @@ one with the newest pull-timestamp in its filename wins.
   filename, keeps NAIC as a string, treats a literal `.` as suppressed (never 0),
   detects and excludes the `Total` footer row (and uses it as a checksum).
 - `config/carrier_groups.csv` — editable NAIC → parent-group mapping used by the API.
-- `api/flpc/` — query engine, MCP server and REST API (see docs/API.md).
+- `supabase/` — the hosted API: database setup (`flpc.sql`) and the Edge Function
+  (`functions/flpc`, logic in `functions/_shared/flpc/`), see docs/ARCHITECTURE.md.
+- `client/`, `mcp/`, `openclaw/` — shared API client, local stdio MCP server, OpenClaw CLI and skill.
+- `api/flpc/` — self-hosted Python query engine, MCP server and REST API (see docs/API.md).
 - `web/index.html` + `web/app.js` — the static frontend (Plotly is vendored in
   `web/vendor/` so it works offline).
 

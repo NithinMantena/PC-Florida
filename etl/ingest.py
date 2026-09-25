@@ -23,8 +23,9 @@ Design notes (see Florida_PC_PRD.md):
   * Re-running is idempotent and, when the same period appears twice, the file
     with the newest pull-timestamp in its name wins.
 
-Outputs: web/data.js (static explorer), data/florida_pc.sqlite (API / MCP
-server store) and validation_report.txt.
+Outputs: web/data.js (static explorer), data/florida_pc.sqlite (local API /
+MCP server store), validation_report.txt, and optionally (--push) the hosted
+Supabase store behind the public API.
 
 Run:  python etl/ingest.py            (see --help for input/output options)
 """
@@ -598,19 +599,36 @@ def write_data_js(data, path=OUT_DATA_JS):
 LINE_CODE = {"Commercial Residential": "commercial", "Personal Residential": "personal"}
 
 
-def write_sqlite(data, path=OUT_SQLITE):
-    """Write the normalized store the API / MCP server queries.
+# Column types of the normalized store. `facts` gets one REAL column per
+# metric captured, after these dimension columns.
+STORE_SCHEMA = {
+    "meta": [("key", "TEXT PRIMARY KEY"), ("value", "TEXT")],
+    "periods": [("period", "TEXT PRIMARY KEY"), ("idx", "INTEGER"), ("year", "INTEGER"),
+                ("quarter", "INTEGER"), ("period_end", "TEXT"), ("pulled_at", "TEXT"), ("source_file", "TEXT")],
+    "companies": [("naic", "TEXT PRIMARY KEY"), ("name", "TEXT"), ("names", "TEXT"), ("group_id", "TEXT"),
+                  ("group_name", "TEXT"), ("first_period", "TEXT"), ("last_period", "TEXT")],
+    "groups": [("group_id", "TEXT PRIMARY KEY"), ("group_name", "TEXT"), ("standalone", "INTEGER"),
+               ("members", "TEXT")],
+    "policy_types": [("pt_id", "TEXT PRIMARY KEY"), ("policy_type", "TEXT"), ("line", "TEXT"),
+                     ("product", "TEXT"), ("wind_only", "INTEGER")],
+    "metrics": [("metric", "TEXT PRIMARY KEY"), ("first_period", "TEXT"), ("last_period", "TEXT"),
+                ("n_periods", "INTEGER")],
+    "facts": [("period", "TEXT"), ("idx", "INTEGER"), ("naic", "TEXT"), ("group_id", "TEXT"), ("pt_id", "TEXT"),
+              ("line", "TEXT"), ("product", "TEXT"), ("wind_only", "INTEGER")],
+    "suppressed": [("period", "TEXT"), ("naic", "TEXT"), ("pt_id", "TEXT"), ("metric", "TEXT")],
+    "published_totals": [("file_type", "TEXT"), ("period", "TEXT"), ("metric", "TEXT"), ("value", "REAL")],
+    "summary_a": [("period", "TEXT"), ("naic", "TEXT"), ("company", "TEXT"), ("a_pif", "REAL"),
+                  ("a_pif_commercial", "REAL"), ("a_pif_personal", "REAL"), ("a_dpw", "REAL"),
+                  ("a_dpw_commercial", "REAL"), ("a_dpw_personal", "REAL")],
+}
 
-    Written to a temp file and atomically swapped in, so a running server
-    never sees a half-built database.
+
+def store_tables(data):
+    """The normalized store as {table: (columns, rows)}.
+
+    Shared by the local SQLite store (`write_sqlite`) and the hosted Supabase
+    store (`write_bundle` / `push_bundle`), so both hold identical rows.
     """
-    import sqlite3
-
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    tmp = path + ".tmp"
-    if os.path.exists(tmp):
-        os.remove(tmp)
-    con = sqlite3.connect(tmp)
     metrics = data["metrics_b"]
     order = data["period_order"]
     pidx = {p: _period_sort_key(p)[0] * 4 + _period_sort_key(p)[1] - 1 for p in order}
@@ -628,51 +646,29 @@ def write_sqlite(data, path=OUT_SQLITE):
             groups[gid] = {"name": c["name"], "members": [naic], "standalone": True}
         comp_group[naic] = gid
 
-    cur = con.cursor()
-    cur.executescript(f"""
-        CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-        CREATE TABLE periods(period TEXT PRIMARY KEY, idx INTEGER, year INTEGER,
-            quarter INTEGER, period_end TEXT, pulled_at TEXT, source_file TEXT);
-        CREATE TABLE companies(naic TEXT PRIMARY KEY, name TEXT, names TEXT,
-            group_id TEXT, group_name TEXT, first_period TEXT, last_period TEXT);
-        CREATE TABLE groups(group_id TEXT PRIMARY KEY, group_name TEXT,
-            standalone INTEGER, members TEXT);
-        CREATE TABLE policy_types(pt_id TEXT PRIMARY KEY, policy_type TEXT,
-            line TEXT, product TEXT, wind_only INTEGER);
-        CREATE TABLE metrics(metric TEXT PRIMARY KEY, first_period TEXT,
-            last_period TEXT, n_periods INTEGER);
-        CREATE TABLE facts(period TEXT, idx INTEGER, naic TEXT, group_id TEXT,
-            pt_id TEXT, line TEXT, product TEXT, wind_only INTEGER,
-            {", ".join(f"{m} REAL" for m in metrics)},
-            PRIMARY KEY(period, naic, pt_id));
-        CREATE TABLE suppressed(period TEXT, naic TEXT, pt_id TEXT, metric TEXT);
-        CREATE TABLE published_totals(file_type TEXT, period TEXT, metric TEXT, value REAL);
-        CREATE TABLE summary_a(period TEXT, naic TEXT, company TEXT,
-            a_pif REAL, a_pif_commercial REAL, a_pif_personal REAL,
-            a_dpw REAL, a_dpw_commercial REAL, a_dpw_personal REAL);
-    """)
-    cur.executemany("INSERT INTO meta VALUES (?,?)", [
+    t = {}
+    t["meta"] = [
         ("generated_at", data["generated_at"]),
         ("latest_period", order[-1]),
         ("source_files", json.dumps(sorted(os.path.basename(p) for p in data["files"].values()))),
-    ])
-    cur.executemany("INSERT INTO periods VALUES (?,?,?,?,?,?,?)", [
+    ]
+    t["periods"] = [
         (p, pidx[p], int(p[:4]), int(p[-1]), data["periods_meta"][p]["period_end"],
          data["periods_meta"][p]["pulled_at"], data["periods_meta"][p].get("file_B"))
-        for p in order])
-    cur.executemany("INSERT INTO companies VALUES (?,?,?,?,?,?,?)", [
+        for p in order]
+    t["companies"] = [
         (n, c["name"], " | ".join(c["names"]), comp_group[n], groups[comp_group[n]]["name"],
-         c["first"], c["last"]) for n, c in comps.items()])
-    cur.executemany("INSERT INTO groups VALUES (?,?,?,?)", [
+         c["first"], c["last"]) for n, c in comps.items()]
+    t["groups"] = [
         (gid, g["name"], 1 if g.get("standalone") else 0, ",".join(sorted(g["members"])))
-        for gid, g in groups.items()])
+        for gid, g in groups.items()]
     pts = data["policy_types"]
-    cur.executemany("INSERT INTO policy_types VALUES (?,?,?,?,?)", [
+    t["policy_types"] = [
         (d["id"], pt, LINE_CODE.get(d["line"], "other"), d["product"], int(d["is_wind_only"]))
-        for pt, d in pts.items()])
+        for pt, d in pts.items()]
 
     avail = defaultdict(set)
-    rows, sup_rows = [], []
+    facts, sup_rows = {}, []
     for f in data["facts_b"]:
         if not f["pt"]:
             continue
@@ -681,20 +677,50 @@ def write_sqlite(data, path=OUT_SQLITE):
         for m, v in zip(metrics, vals):
             if v is not None:
                 avail[m].add(f["p"])
-        rows.append((f["p"], pidx[f["p"]], f["naic"], comp_group[f["naic"]], d["id"],
-                     LINE_CODE.get(d["line"], "other"), d["product"], int(d["is_wind_only"]),
-                     *vals))
+        # one row per (period, naic, policy type); a later duplicate replaces it
+        facts[(f["p"], f["naic"], d["id"])] = (
+            f["p"], pidx[f["p"]], f["naic"], comp_group[f["naic"]], d["id"],
+            LINE_CODE.get(d["line"], "other"), d["product"], int(d["is_wind_only"]), *vals)
         for m in f.get("_sup", []):
             sup_rows.append((f["p"], f["naic"], d["id"], m))
-    cur.executemany(f"INSERT OR REPLACE INTO facts VALUES ({','.join('?' * (8 + len(metrics)))})", rows)
-    cur.executemany("INSERT INTO suppressed VALUES (?,?,?,?)", sup_rows)
-    cur.executemany("INSERT INTO metrics VALUES (?,?,?,?)", [
+    t["facts"] = list(facts.values())
+    t["suppressed"] = sup_rows
+    t["metrics"] = [
         (m, min(avail[m], key=_period_sort_key), max(avail[m], key=_period_sort_key), len(avail[m]))
-        for m in metrics if avail[m]])
-    cur.executemany("INSERT INTO published_totals VALUES (?,?,?,?)", data["totals"])
+        for m in metrics if avail[m]]
+    t["published_totals"] = [tuple(x) for x in data["totals"]]
     a_cols = ["a_pif", "a_pif_commercial", "a_pif_personal", "a_dpw", "a_dpw_commercial", "a_dpw_personal"]
-    cur.executemany("INSERT INTO summary_a VALUES (?,?,?,?,?,?,?,?,?)", [
-        (f["p"], f["naic"], f.get("company"), *[f.get(k) for k in a_cols]) for f in data["facts_a"]])
+    t["summary_a"] = [(f["p"], f["naic"], f.get("company"), *[f.get(k) for k in a_cols]) for f in data["facts_a"]]
+
+    out = {}
+    for name, cols in STORE_SCHEMA.items():
+        names = [c for c, _ in cols] + (list(metrics) if name == "facts" else [])
+        out[name] = (names, t[name])
+    return out
+
+
+def write_sqlite(data, path=OUT_SQLITE):
+    """Write the normalized store the API / MCP server queries.
+
+    Written to a temp file and atomically swapped in, so a running server
+    never sees a half-built database.
+    """
+    import sqlite3
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    con = sqlite3.connect(tmp)
+    tables = store_tables(data)
+    cur = con.cursor()
+    for name, cols in STORE_SCHEMA.items():
+        defs = [f"{c} {typ}" for c, typ in cols]
+        if name == "facts":
+            defs += [f"{m} REAL" for m in data["metrics_b"]] + ["PRIMARY KEY(period, naic, pt_id)"]
+        cur.execute(f"CREATE TABLE {name}({', '.join(defs)})")
+        names, rows = tables[name]
+        cur.executemany(f"INSERT INTO {name} VALUES ({','.join('?' * len(names))})", rows)
     cur.executescript("""
         CREATE INDEX ix_facts_idx ON facts(idx);
         CREATE INDEX ix_facts_naic ON facts(naic);
@@ -703,6 +729,46 @@ def write_sqlite(data, path=OUT_SQLITE):
     con.commit()
     con.close()
     os.replace(tmp, path)
+
+
+BUNDLE_FORMAT = 1
+
+
+def bundle_bytes(data) -> bytes:
+    """The store as gzipped JSON: the body of the hosted API's /admin/load."""
+    import gzip
+
+    tables = store_tables(data)
+    doc = {"format": BUNDLE_FORMAT, "generated_at": data["generated_at"],
+           "tables": {name: {"columns": cols, "rows": rows} for name, (cols, rows) in tables.items()}}
+    return gzip.compress(json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 9)
+
+
+def write_bundle(data, path):
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(bundle_bytes(data))
+
+
+def push_bundle(data, url, token, timeout=120):
+    """Replace the hosted (Supabase) store with this dataset in one transaction.
+
+    `url` is the API base, e.g. https://<ref>.supabase.co/functions/v1/flpc, and
+    `token` an API token with the `load` scope.
+    """
+    import urllib.error
+    import urllib.request
+
+    body = bundle_bytes(data)
+    req = urllib.request.Request(url.rstrip("/") + "/admin/load", data=body, method="POST", headers={
+        "Authorization": f"Bearer {token}", "Content-Type": "application/json", "Content-Encoding": "gzip",
+        "User-Agent": "flpc-etl"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:2000]
+        raise SystemExit(f"push failed: HTTP {e.code} {detail}") from None
 
 
 def main(argv=None):
@@ -715,7 +781,14 @@ def main(argv=None):
     ap.add_argument("--sqlite", default=OUT_SQLITE, help="SQLite output path")
     ap.add_argument("--no-web", action="store_true", help="skip writing web/data.js")
     ap.add_argument("--no-report", action="store_true", help="skip validation_report.txt")
+    ap.add_argument("--bundle", help="also write the gzipped JSON load bundle to this path")
+    ap.add_argument("--push", action="store_true",
+                    help="upload the dataset to the hosted API (env FLPC_URL + FLPC_LOAD_TOKEN)")
+    ap.add_argument("--url", default=os.environ.get("FLPC_URL"), help="hosted API base URL for --push")
+    ap.add_argument("--token", default=os.environ.get("FLPC_LOAD_TOKEN"), help="API token with the load scope")
     args = ap.parse_args(argv)
+    if args.push and not (args.url and args.token):
+        ap.error("--push needs --url/FLPC_URL and --token/FLPC_LOAD_TOKEN")
 
     data = build(args.inputs, args.groups)
     outputs = []
@@ -728,6 +801,9 @@ def main(argv=None):
     if not args.no_report:
         write_report(data)
         outputs.append(OUT_REPORT)
+    if args.bundle:
+        write_bundle(data, args.bundle)
+        outputs.append(args.bundle)
 
     print(f"OK  periods={len(data['period_order'])}  facts_B={len(data['facts_b'])}  "
           f"facts_A={len(data['facts_a'])}  companies={len(data['companies'])}  "
@@ -736,6 +812,10 @@ def main(argv=None):
         print(f"    wrote {o}")
     if data["warnings"]:
         print(f"    {len(data['warnings'])} warning(s) — see report")
+    if args.push:
+        res = push_bundle(data, args.url, args.token)
+        print(f"    pushed to {args.url}: {res.get('periods')} periods, latest {res.get('latest_period')}, "
+              f"{res.get('rows', {}).get('facts')} fact rows (load {res.get('load_id')})")
 
 
 def _now():

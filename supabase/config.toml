@@ -1,0 +1,10 @@
+project_id = "pc-florida"  # local label only; the target project is chosen with --project-ref
+
+# Only the pieces this repository deploys. The Supabase project itself is
+# shared (e.g. with the reading list); its settings live in the dashboard.
+# Deploy: supabase functions deploy flpc --project-ref <ref> --no-verify-jwt
+
+[functions.flpc]
+# The function checks its own API tokens (flpc.api_tokens), so the platform's
+# Supabase-JWT check must be off: connectors send our token, not a Supabase JWT.
+verify_jwt = false

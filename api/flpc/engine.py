@@ -378,8 +378,9 @@ def aggregate(store: Store, cols, dims, flt: Filters, idxs) -> dict:
     idxs = sorted(set(idxs))
     where.append(f"f.idx IN ({','.join('?' * len(idxs))})")
     args += idxs
+    # ORDER BY keeps tie order deterministic (and identical in the hosted engine)
     sql = (f"SELECT {', '.join(sel)} FROM facts f WHERE {' AND '.join(where)} "
-           f"GROUP BY {', '.join(dcols + ['f.idx'])}")
+           f"GROUP BY {', '.join(dcols + ['f.idx'])} ORDER BY {', '.join(dcols + ['f.idx'])}")
     out: dict = defaultdict(dict)
     nd = len(dims)
     for r in _query(store, sql, args):
@@ -431,6 +432,15 @@ def _check_available(store: Store, ms, idxs):
             if bad and len(bad) == len(idxs):
                 raise UserError(f"Metric '{m.id}' is only reported {plabel(a[0])}..{plabel(a[1])}; "
                                 f"requested {', '.join(plabel(i) for i in idxs)}.")
+
+
+def _s(v) -> str:
+    """A number inside prose: 115.0 -> '115', None -> 'n/a' (same as the hosted engine)."""
+    if v is None:
+        return "n/a"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
 
 
 def _growth(v, prev):
@@ -704,9 +714,9 @@ def compare_periods(store: Store, metric, period_from="latest-1", period_to="lat
         gu, gd = sum(x[3] for x in up), sum(x[3] for x in dn)
         top_up = sum(x[3] for x in up[:3])
         r.notes.append(
-            f"Net change {sc(net)} {sc.label} ({pct(_growth(B, A))}%) = gross increases {sc(gu)} across {len(up)} "
-            f"+ gross decreases {sc(gd)} across {len(dn)}."
-            + (f" Top 3 increases = {pct(top_up / gu)}% of gross increases." if gu else ""))
+            f"Net change {_s(sc(net))} {sc.label} ({_s(pct(_growth(B, A)))}%) = gross increases {_s(sc(gu))} "
+            f"across {len(up)} + gross decreases {_s(sc(gd))} across {len(dn)}."
+            + (f" Top 3 increases = {_s(pct(top_up / gu))}% of gross increases." if gu else ""))
     note = suppressed_note(store, flt, cols, [ia, ib])
     if note:
         r.notes.append(note)
@@ -917,7 +927,7 @@ def find_companies(store: Store, query, limit=10, period="latest") -> Response:
         hits += [n for n in store.groups[g]["members"] if n not in hits]
     size = aggregate(store, ["pif", "tiv"], ["company"], Filters(), [i])
     ranks = {n: k for k, (n,) in enumerate(sorted(size, key=lambda k: -((size[k].get(i) or {}).get("pif") or 0)), 1)}
-    hits = sorted(set(hits), key=lambda n: -(((size.get((n,)) or {}).get(i) or {}).get("tiv") or 0))[:limit]
+    hits = sorted(dict.fromkeys(hits), key=lambda n: -(((size.get((n,)) or {}).get(i) or {}).get("tiv") or 0))[:limit]
     if not hits:
         raise UserError(f"No companies match '{q}'.")
     st = Scale("usd", [((size.get((n,)) or {}).get(i) or {}).get("tiv") for n in hits])
