@@ -5,10 +5,11 @@
 // (default: postgres://postgres@127.0.0.1:5432/postgres).
 
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { connect, pgDb, type Sql } from "../supabase/functions/_shared/flpc/pg.ts";
 
-export const REPO = new URL("..", import.meta.url).pathname;
+export const REPO = fileURLToPath(new URL("..", import.meta.url)); // ends with a separator
 const ADMIN_URL = process.env.TEST_DATABASE_URL ?? "postgres://postgres@127.0.0.1:5432/postgres";
 
 export function withDb(url: string, db: string): string {
@@ -19,6 +20,20 @@ export function withDb(url: string, db: string): string {
 
 export function bundleText(): string {
   return gunzipSync(readFileSync(`${REPO}data/bundle.json.gz`)).toString("utf8");
+}
+
+/** Counts of the loaded bundle, so tests don't break when a quarter is added. */
+export function bundleStats(): { facts: number; periods: number; latest: string; previous: string } {
+  const b = JSON.parse(bundleText());
+  const p = b.tables.periods;
+  const col = p.columns.indexOf("period");
+  const periods = (p.rows as unknown[][]).map((r) => String(r[col])).sort();
+  return {
+    facts: b.tables.facts.rows.length,
+    periods: periods.length,
+    latest: periods[periods.length - 1],
+    previous: periods[periods.length - 2],
+  };
 }
 
 let shared: Promise<{ url: string; sql: Sql }> | null = null;

@@ -7,7 +7,9 @@ import { after, before, describe, test } from "node:test";
 import { clearTokenCache } from "../supabase/functions/_shared/flpc/auth.ts";
 import { connect, pgDb, type Sql } from "../supabase/functions/_shared/flpc/pg.ts";
 import { createHandler, readerFactory } from "../supabase/functions/_shared/flpc/server.ts";
-import { dropTestDatabase, REPO, testDatabase } from "./helpers.ts";
+import { bundleStats, dropTestDatabase, REPO, testDatabase } from "./helpers.ts";
+
+const DATA = bundleStats(); // what the ETL built from the workbooks in the repo
 
 let sql: Sql;
 let handle: (req: Request) => Promise<Response>;
@@ -60,8 +62,8 @@ describe("open endpoints", () => {
     assert.equal(r.status, 200);
     const h = await r.json();
     assert.equal(h.ok, true);
-    assert.equal(h.latest_period, "2026Q1");
-    assert.equal(h.periods, 16);
+    assert.equal(h.latest_period, DATA.latest);
+    assert.equal(h.periods, DATA.periods);
   });
   test("openapi lists every operation with the public server URL", async () => {
     const spec = await (await call("/openapi.json")).json();
@@ -177,7 +179,7 @@ describe("remote MCP", () => {
     const { body } = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call",
       params: { name: "market_overview", arguments: { top_n: 2 } } });
     assert.equal(body.result.isError, false);
-    assert.match(body.result.content[0].text, /^## Market overview — 2026Q1/);
+    assert.ok(body.result.content[0].text.startsWith(`## Market overview — ${DATA.latest}`));
   });
   test("tool errors come back as isError results the model can read", async () => {
     const { body } = await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call",
@@ -206,7 +208,7 @@ describe("run_sql", () => {
     const { status, body } = await q("select period, count(*) n, sum(tiv) tiv from facts group by period order by period");
     assert.equal(status, 200);
     assert.deepEqual(body.tables[0].columns, ["period", "n", "tiv"]);
-    assert.equal(body.tables[0].rows.length, 16);
+    assert.equal(body.tables[0].rows.length, DATA.periods);
     assert.equal(typeof body.tables[0].rows[0][1], "number");
     const naic = await q("select naic from companies where naic = '10064'");
     assert.deepEqual(naic.body.tables[0].rows, [["10064"]]); // text stays text
@@ -237,6 +239,7 @@ describe("run_sql", () => {
   test("the reader role itself is read-only, whatever the query text", async () => {
     const u = new URL((await testDatabase()).url);
     u.username = "flpc_reader";
+    u.password = (await sql.unsafe("SELECT value FROM flpc.secrets WHERE key = 'reader_password'"))[0].value;
     const r = connect(u.toString(), { max: 1 });
     readers.push(r);
     await assert.rejects(r.unsafe("DELETE FROM flpc.facts"), /read-only|permission denied/);
@@ -245,7 +248,7 @@ describe("run_sql", () => {
     await assert.rejects(r.unsafe("SET ROLE postgres"), /permission denied/);
     await assert.rejects(r.unsafe("SELECT * FROM flpc.api_tokens"), /permission denied/);
     const ok = await r.unsafe("SELECT count(*)::int AS n FROM facts");
-    assert.equal(ok[0].n, 7367);
+    assert.equal(ok[0].n, DATA.facts);
   });
   test("rows are capped", async () => {
     const r = await post("/api/sql", { query: "select * from facts", limit: 5 });
@@ -264,8 +267,8 @@ describe("data load", () => {
     });
     assert.equal(r.status, 200, await r.clone().text());
     const j = await r.json();
-    assert.equal(j.rows.facts, 7367);
-    assert.equal(j.latest_period, "2026Q1");
+    assert.equal(j.rows.facts, DATA.facts);
+    assert.equal(j.latest_period, DATA.latest);
     const afterId = (await sql.unsafe("SELECT value FROM flpc.meta WHERE key = 'load_id'"))[0].value;
     assert.notEqual(afterId, before);
     const loads = await sql.unsafe("SELECT token_name FROM flpc.loads ORDER BY loaded_at DESC LIMIT 1");
@@ -281,7 +284,7 @@ describe("data load", () => {
     assert.equal(r2.status, 400);
     assert.match((await r2.json()).error, /refusing to replace/);
     const n = await sql.unsafe("SELECT count(*)::int AS n FROM flpc.facts");
-    assert.equal(n[0].n, 7367);
+    assert.equal(n[0].n, DATA.facts);
   });
   test("a new metric column in a future workbook is added automatically", async () => {
     const b = JSON.parse(new TextDecoder().decode(
@@ -291,6 +294,6 @@ describe("data load", () => {
     const r = await call("/admin/load", { method: "POST", token: loadToken, body: JSON.stringify(b) });
     assert.equal(r.status, 200, await r.clone().text());
     const s = await sql.unsafe("SELECT sum(claims_reopened)::int AS n FROM flpc.facts");
-    assert.equal(s[0].n, 7367);
+    assert.equal(s[0].n, DATA.facts);
   });
 });
