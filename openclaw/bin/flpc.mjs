@@ -105,7 +105,9 @@ async function main(argv) {
   return 0;
 }
 
-main(process.argv.slice(2)).then((code) => process.exit(code), (e) => {
+// exitCode, not process.exit(): exiting while fetch's socket is closing trips a
+// libuv assertion on Windows (UV_HANDLE_CLOSING) and turns success into a crash.
+main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e) => {
   console.error(e instanceof FlpcError ? `flpc: ${e.message}` : e);
-  process.exit(e instanceof FlpcError && e.status === 2 ? 2 : 1);
+  process.exitCode = e instanceof FlpcError && e.status === 2 ? 2 : 1;
 });
